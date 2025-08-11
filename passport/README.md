@@ -184,20 +184,6 @@ This will:
 3. Attempt to store it via the Passport API
 4. Demonstrate the conversion process
 
-## Limitations
-
-1. **Reverse Conversion**: PassportToVoucher is not fully implemented
-2. **Certificate Handling**: Only basic certificate extraction is implemented
-3. **Ownership Chain**: Complex ownership transfers may need additional mapping
-4. **Cryptographic Verification**: Passport data can't be cryptographically verified like vouchers
-
-## Future Enhancements
-
-1. Implement full reverse conversion from Passport to voucher
-2. Add support for complex ownership chains
-3. Enhance certificate handling and validation
-4. Add audit logging for voucher lifecycle events
-5. Implement Passport data validation against FDO requirements
 
 ## Integration Approach
 
@@ -212,3 +198,4 @@ If challenges arise with this approach, the fallback option is available:
 > "if we find a lot of challenges, we can keep the voucher as is, and at the end of protocol make a call to make commissioning passport."
 
 The OnVoucherCreated and OnVoucherExtended callbacks support this fallback approach by allowing Passport commissioning calls at voucher lifecycle events.
+
