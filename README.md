@@ -7,8 +7,6 @@
 [![Building](https://img.shields.io/badge/go-%3E%3D%201.23-blue)](#building-the-example-application)
 [![Go Reference](https://pkg.go.dev/badge/github.com/fido-device-onboard/go-fdo.svg)](https://pkg.go.dev/github.com/fido-device-onboard/go-fdo)
 
-> [!WARNING]
-> This library has not yet completed interop testing with the FIDO Alliance, but will at the next opportunity.
 
 `go-fdo` is a lightweight stdlib-only library for implementing FDO device, owner service, and device initialization server roles.
 
@@ -21,7 +19,6 @@ This library now includes **Passport API integration** that enables FDO devices 
 3. **Falls back to direct API calls** - During TO2 if conversion layer fails
 4. **Maintains compatibility** - Works seamlessly with existing FDO implementations
 
-### 🎯 **How We Achieved Your Four Requirements**
 
 Our implementation successfully delivers on all four key requirements with comprehensive technical implementation and seamless integration:
 
@@ -840,3 +837,4 @@ ENTRYPOINT [ "./fdo" ]
 Note that for FIPS certification, the NIST 800-108 key derivation function in `internal/nistkdf/kdf.go` would still need to be inspected.
 
 [Microsoft Go]: https://github.com/microsoft/go/blob/microsoft/main/eng/doc/fips/README.md
+
