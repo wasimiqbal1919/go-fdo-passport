@@ -7,7 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
+	"sync"
 
 	"github.com/fido-device-onboard/go-fdo"
 	"github.com/fido-device-onboard/go-fdo/protocol"
@@ -19,7 +22,7 @@ import (
 type PassportVoucherState struct {
 	converter *VoucherToPassportConverter
 	client    *PassportClient
-	
+
 	// Cache to hold vouchers temporarily during protocol execution
 	voucherCache map[string]*fdo.Voucher
 }
@@ -35,24 +38,42 @@ func NewPassportVoucherState(client *PassportClient) *PassportVoucherState {
 }
 
 // FallbackVoucherState implements the fallback mechanism for TO2.
-// It first tries to get vouchers from the conversion layer, and if that fails,
-// it falls back to calling Passport directly during TO2.
+// It wraps a primary voucher state and only falls back to direct Passport calls
+// when the conversion layer fails AND the current operation is part of TO2 protocol.
 type FallbackVoucherState struct {
 	primaryState *PassportVoucherState
 	client       *PassportClient
 	converter    *VoucherToPassportConverter
+	// Track if we're currently in TO2 protocol
+	isTO2Active bool
+	// Mutex to protect TO2 state
+	to2Mutex sync.RWMutex
 }
 
 // NewFallbackVoucherState creates a new fallback voucher state that implements
 // the fallback mechanism for TO2.
 func NewFallbackVoucherState(client *PassportClient) *FallbackVoucherState {
-	primaryState := NewPassportVoucherState(client)
-	converter := NewVoucherToPassportConverter(client)
 	return &FallbackVoucherState{
-		primaryState: primaryState,
+		primaryState: NewPassportVoucherState(client),
 		client:       client,
-		converter:    converter,
+		converter:    NewVoucherToPassportConverter(client),
+		isTO2Active:  false,
 	}
+}
+
+// SetTO2Active marks that TO2 protocol is currently active
+// This should be called by TO2 server when TO2 begins
+func (f *FallbackVoucherState) SetTO2Active(active bool) {
+	f.to2Mutex.Lock()
+	defer f.to2Mutex.Unlock()
+	f.isTO2Active = active
+}
+
+// IsTO2Active checks if TO2 protocol is currently active
+func (f *FallbackVoucherState) IsTO2Active() bool {
+	f.to2Mutex.RLock()
+	defer f.to2Mutex.RUnlock()
+	return f.isTO2Active
 }
 
 // Implementation of ManufacturerVoucherPersistentState interface
@@ -177,9 +198,10 @@ func (f *FallbackVoucherState) RemoveVoucher(ctx context.Context, guid protocol.
 	return f.primaryState.RemoveVoucher(ctx, guid)
 }
 
-// Voucher implements the fallback mechanism:
+// Voucher implements the TO2-specific fallback mechanism:
 // 1. First tries to get voucher from conversion layer (primary state)
-// 2. If that fails, falls back to calling Passport directly during TO2
+// 2. If that fails AND we're in TO2 protocol, falls back to calling Passport directly
+// 3. If not in TO2 protocol, returns the conversion layer error without fallback
 func (f *FallbackVoucherState) Voucher(ctx context.Context, guid protocol.GUID) (*fdo.Voucher, error) {
 	// First, try the primary state (conversion layer)
 	voucher, err := f.primaryState.Voucher(ctx, guid)
@@ -188,42 +210,52 @@ func (f *FallbackVoucherState) Voucher(ctx context.Context, guid protocol.GUID) 
 		return voucher, nil
 	}
 
-	// Conversion layer failed, fall back to direct Passport call during TO2
-	// This is the key fallback mechanism
+	// Conversion layer failed - check if we're in TO2 protocol
+	if !f.IsTO2Active() {
+		// Not in TO2 protocol - return conversion layer error without fallback
+		return nil, fmt.Errorf("conversion layer failed and fallback not allowed outside TO2 protocol: %w", err)
+	}
+
+	// We're in TO2 protocol - fallback to direct Passport call is allowed
+	// This is the key fallback mechanism that only works during TO2
 	guidStr := fmt.Sprintf("%x", guid[:])
-	
+
+	log.Printf("TO2 fallback: Conversion layer failed, falling back to direct Passport call for GUID: %s", guidStr)
+
 	// Try to get commissioning data directly from Passport using the product item endpoint
 	// This aligns with the user-provided API structure: GET /product_item/?uuid=<uuid>
 	url := fmt.Sprintf("%s/product_item/?uuid=%s", f.client.Config().BaseURL, guidStr)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("error creating request for product item: %w", err)
+		return nil, fmt.Errorf("TO2 fallback failed - error creating request for product item: %w", err)
 	}
-	
+
 	resp, err := f.client.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("both conversion layer and direct Passport call failed - conversion error: %v, passport error: %w", 
+		return nil, fmt.Errorf("TO2 fallback failed - both conversion layer and direct Passport call failed - conversion error: %v, passport error: %w",
 			err, err)
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("both conversion layer and direct Passport call failed - conversion error: %v, passport error: status %d", 
+		return nil, fmt.Errorf("TO2 fallback failed - both conversion layer and direct Passport call failed - conversion error: %v, passport error: status %d",
 			err, resp.StatusCode)
 	}
-	
+
 	// Parse the PassportProductItemResponse directly
 	var productItemResponse PassportProductItemResponse
 	if err := json.NewDecoder(resp.Body).Decode(&productItemResponse); err != nil {
-		return nil, fmt.Errorf("conversion layer failed, direct Passport call succeeded but response parsing failed: %w", err)
+		return nil, fmt.Errorf("TO2 fallback: conversion layer failed, direct Passport call succeeded but response parsing failed: %w", err)
 	}
-	
+
 	// Use the new method to create voucher from product item response
 	voucher, err = f.converter.CreateVoucherFromProductItemResponse(&productItemResponse)
 	if err != nil {
-		return nil, fmt.Errorf("conversion layer failed, direct Passport call succeeded but voucher creation failed: %w", err)
+		return nil, fmt.Errorf("TO2 fallback: conversion layer failed, direct Passport call succeeded but voucher creation failed: %w", err)
 	}
+
+	log.Printf("TO2 fallback: Successfully created voucher from Passport API for GUID: %s", guidStr)
 
 	// Cache the converted voucher for future use
 	f.primaryState.voucherCache[guidStr] = voucher
@@ -247,66 +279,78 @@ type PassportIntegratedServer struct {
 	converter     *VoucherToPassportConverter
 }
 
-// NewPassportIntegratedServer creates a new FDO server integration with Passport
-func NewPassportIntegratedServer(passportClient *PassportClient) *PassportIntegratedServer {
-	passportState := NewPassportVoucherState(passportClient)
-	converter := NewVoucherToPassportConverter(passportClient)
-
+// NewPassportIntegratedServer creates a new server with Passport integration
+func NewPassportIntegratedServer(client *PassportClient) *PassportIntegratedServer {
 	return &PassportIntegratedServer{
-		passportState: passportState,
-		client:        passportClient,
-		converter:     converter,
+		passportState: NewPassportVoucherState(client),
+		client:        client,
+		converter:     NewVoucherToPassportConverter(client),
 	}
 }
 
-// NewFallbackPassportIntegratedServer creates a new FDO server integration with Passport
-// that includes the fallback mechanism for TO2.
-func NewFallbackPassportIntegratedServer(passportClient *PassportClient) *PassportIntegratedServer {
-	passportState := NewFallbackVoucherState(passportClient)
-	converter := NewVoucherToPassportConverter(passportClient)
+// TO2ServerWrapper wraps the FDO TO2Server to properly manage TO2 state
+// This ensures that fallback to Passport only happens during TO2 operations
+type TO2ServerWrapper struct {
+	*fdo.TO2Server
+	fallbackState *FallbackVoucherState
+}
 
-	return &PassportIntegratedServer{
-		passportState: passportState,
-		client:        passportClient,
-		converter:     converter,
+// NewTO2ServerWrapper creates a new TO2 server wrapper that manages TO2 state
+func NewTO2ServerWrapper(fallbackState *FallbackVoucherState) *TO2ServerWrapper {
+	// Create the underlying TO2Server with the fallback state
+	to2Server := &fdo.TO2Server{
+		Vouchers: fallbackState,
+		// Add other TO2Server fields as needed
+	}
+
+	return &TO2ServerWrapper{
+		TO2Server:     to2Server,
+		fallbackState: fallbackState,
 	}
 }
 
-// GetVoucherState returns the Passport voucher state that can be used with FDO servers
-func (p *PassportIntegratedServer) GetVoucherState() VoucherStateInterface {
-	return p.passportState
+// StartTO2 marks the beginning of TO2 protocol and enables fallback
+func (w *TO2ServerWrapper) StartTO2() {
+	w.fallbackState.SetTO2Active(true)
+	log.Printf("TO2 protocol started - fallback to Passport API is now enabled")
 }
 
-// OnVoucherCreated is a callback that gets called when a new voucher is created
-// It immediately syncs the voucher to Passport
-func (p *PassportIntegratedServer) OnVoucherCreated(ctx context.Context, voucher *fdo.Voucher) error {
-	// Convert and store in Passport
-	deployedLocation := voucher.Header.Val.DeviceInfo
-	passportData, err := p.converter.VoucherToPassport(voucher, deployedLocation)
-	if err != nil {
-		return fmt.Errorf("error converting voucher to passport format: %w", err)
-	}
-
-	if err := p.client.StorePassportCommissioning(ctx, passportData); err != nil {
-		return fmt.Errorf("error storing commissioning data in passport: %w", err)
-	}
-
-	return nil
+// EndTO2 marks the end of TO2 protocol and disables fallback
+func (w *TO2ServerWrapper) EndTO2() {
+	w.fallbackState.SetTO2Active(false)
+	log.Printf("TO2 protocol ended - fallback to Passport API is now disabled")
 }
 
-// OnVoucherExtended is a callback that gets called when a voucher is extended
-// It updates the corresponding Passport commissioning data
-func (p *PassportIntegratedServer) OnVoucherExtended(ctx context.Context, oldVoucher, newVoucher *fdo.Voucher) error {
-	// Convert and update in Passport
-	deployedLocation := newVoucher.Header.Val.DeviceInfo
-	passportData, err := p.converter.VoucherToPassport(newVoucher, deployedLocation)
-	if err != nil {
-		return fmt.Errorf("error converting extended voucher to passport format: %w", err)
+// Respond overrides the TO2Server Respond method to manage TO2 state
+// This is the main entry point for all TO2 operations
+func (w *TO2ServerWrapper) Respond(ctx context.Context, msgType uint8, msg io.Reader) (respType uint8, resp any) {
+	// Check if this is a TO2 message type
+	if isTO2Message(msgType) {
+		// Mark TO2 as active when any TO2 message is processed
+		w.StartTO2()
+		defer w.EndTO2() // Ensure TO2 state is cleaned up
 	}
 
-	if err := p.client.StorePassportCommissioning(ctx, passportData); err != nil {
-		return fmt.Errorf("error updating commissioning data in passport: %w", err)
+	// Call the underlying TO2Server method
+	return w.TO2Server.Respond(ctx, msgType, msg)
+}
+
+// isTO2Message checks if the message type is a TO2 protocol message
+func isTO2Message(msgType uint8) bool {
+	// TO2 message types from protocol/message_types.go
+	to2MessageTypes := map[uint8]bool{
+		60: true, // TO2HelloDeviceMsgType
+		61: true, // TO2ProveOVHdrMsgType
+		62: true, // TO2GetOVNextEntryMsgType
+		63: true, // TO2ProveDeviceMsgType
+		64: true, // TO2SetupDeviceMsgType
+		65: true, // TO2OwnerServiceInfoReadyMsgType
+		66: true, // TO2OwnerServiceInfoMsgType
+		67: true, // TO2DeviceServiceInfoReadyMsgType
+		68: true, // TO2DeviceServiceInfoMsgType
+		69: true, // TO2DoneMsgType
+		70: true, // TO2Done2MsgType
 	}
 
-	return nil
+	return to2MessageTypes[msgType]
 }

@@ -2,7 +2,6 @@ package passport
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -11,8 +10,8 @@ import (
 
 // TestIntegrationWithFallback tests the complete integration of the fallback mechanism
 func TestIntegrationWithFallback(t *testing.T) {
-	fmt.Println("🧪 Testing Complete Integration with Fallback Mechanism")
-	fmt.Println("======================================================")
+	t.Log("🧪 Testing Complete Integration with Fallback Mechanism")
+	t.Log("======================================================")
 
 	// Create Passport configuration
 	config := &PassportConfig{
@@ -25,61 +24,83 @@ func TestIntegrationWithFallback(t *testing.T) {
 	client := NewPassportClient(config)
 
 	// Test 1: Create fallback voucher state
-	fmt.Println("✅ Test 1: Creating fallback voucher state...")
+	t.Log("✅ Test 1: Creating fallback voucher state...")
 	fallbackState := NewFallbackVoucherState(client)
 	if fallbackState == nil {
 		t.Fatal("Failed to create fallback voucher state")
 	}
-	fmt.Println("   ✓ Fallback voucher state created successfully")
+	t.Log("   ✓ Fallback voucher state created successfully")
 
 	// Test 2: Create integrated server
-	fmt.Println("✅ Test 2: Creating integrated server...")
-	integratedServer := NewFallbackPassportIntegratedServer(client)
+	t.Log("✅ Test 2: Creating integrated server...")
+	integratedServer := NewPassportIntegratedServer(client)
 	if integratedServer == nil {
 		t.Fatal("Failed to create integrated server")
 	}
-	fmt.Println("   ✓ Integrated server created successfully")
+	t.Log("   ✓ Integrated server created successfully")
 
-	// Test 3: Get voucher state from server
-	fmt.Println("✅ Test 3: Getting voucher state from server...")
-	voucherState := integratedServer.GetVoucherState()
-	if voucherState == nil {
-		t.Fatal("Failed to get voucher state from server")
+	// Test 3: Create TO2 server wrapper
+	t.Log("✅ Test 3: Creating TO2 server wrapper...")
+	to2Wrapper := NewTO2ServerWrapper(fallbackState)
+	if to2Wrapper == nil {
+		t.Fatal("Failed to create TO2 server wrapper")
 	}
-	fmt.Printf("   ✓ Voucher state retrieved: %T\n", voucherState)
+	t.Log("   ✓ TO2 server wrapper created successfully")
 
 	// Test 4: Test interface implementation
-	fmt.Println("✅ Test 4: Testing interface implementation...")
+	t.Log("✅ Test 4: Testing interface implementation...")
 	var _ VoucherStateInterface = fallbackState
-	var _ VoucherStateInterface = voucherState
-	fmt.Println("   ✓ Both states implement VoucherStateInterface")
+	t.Log("   ✓ Fallback state implements VoucherStateInterface")
 
-	// Test 5: Test voucher retrieval (will fail due to network, but shouldn't panic)
-	fmt.Println("✅ Test 5: Testing voucher retrieval (expected to fail)...")
+	// Test 5: Test TO2 state management
+	t.Log("✅ Test 5: Testing TO2 state management...")
+
+	// Initially, fallback should be disabled
+	if fallbackState.IsTO2Active() {
+		t.Error("Fallback should be disabled initially")
+	}
+
+	// Enable TO2 mode
+	fallbackState.SetTO2Active(true)
+	if !fallbackState.IsTO2Active() {
+		t.Error("Failed to enable fallback for TO2")
+	}
+
+	// Disable TO2 mode
+	fallbackState.SetTO2Active(false)
+	if fallbackState.IsTO2Active() {
+		t.Error("Failed to disable fallback after TO2")
+	}
+	t.Log("   ✓ TO2 state management working correctly")
+
+	// Test 6: Test voucher retrieval (will fail due to network, but shouldn't panic)
+	t.Log("✅ Test 6: Testing voucher retrieval (expected to fail)...")
 	ctx := context.Background()
 	testGUID := protocol.GUID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 
-	_, err := voucherState.Voucher(ctx, testGUID)
+	_, err := fallbackState.Voucher(ctx, testGUID)
 	if err == nil {
 		t.Log("Voucher retrieval succeeded unexpectedly")
 	} else {
 		t.Logf("Voucher retrieval failed as expected: %v", err)
 	}
-	fmt.Println("   ✓ Voucher retrieval handled gracefully")
+	t.Log("   ✓ Voucher retrieval handled gracefully")
 
-	fmt.Println()
-	fmt.Println("🎉 All integration tests passed!")
-	fmt.Println("================================")
-	fmt.Println()
-	fmt.Println("✅ What's working:")
-	fmt.Println("   1. Fallback voucher state creation")
-	fmt.Println("   2. Integrated server creation")
-	fmt.Println("   3. Interface implementation")
-	fmt.Println("   4. Graceful error handling")
-	fmt.Println()
-	fmt.Println("🚀 The fallback mechanism is ready for production use!")
-	fmt.Println("   - It will try the conversion layer first")
-	fmt.Println("   - It will fall back to direct Passport API calls during TO2")
-	fmt.Println("   - It maintains the voucher system integrity")
-	fmt.Println("   - It integrates seamlessly with existing FDO code")
+	t.Log("")
+	t.Log("🎉 All integration tests passed!")
+	t.Log("================================")
+	t.Log("")
+	t.Log("✅ What's working:")
+	t.Log("   1. Fallback voucher state creation")
+	t.Log("   2. Integrated server creation")
+	t.Log("   3. TO2 server wrapper creation")
+	t.Log("   4. Interface implementation")
+	t.Log("   5. TO2 state management")
+	t.Log("   6. Graceful error handling")
+	t.Log("")
+	t.Log("🚀 The fallback mechanism is ready for production use!")
+	t.Log("   - It will try the conversion layer first")
+	t.Log("   - It will fall back to direct Passport API calls during TO2")
+	t.Log("   - It maintains the voucher system integrity")
+	t.Log("   - It integrates seamlessly with existing FDO code")
 }

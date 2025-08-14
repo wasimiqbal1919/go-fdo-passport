@@ -1,7 +1,6 @@
 package passport
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -14,11 +13,8 @@ func TestFallbackVoucherStateCreation(t *testing.T) {
 		Timeout: 30,
 	}
 
-	// Create a mock client (this should work even with the compilation error in passport.go)
-	client := &PassportClient{
-		config: config,
-		client: nil, // We won't actually make HTTP calls in this test
-	}
+	// Create a mock client
+	client := NewPassportClient(config)
 
 	// Test that we can create a fallback voucher state
 	fallbackState := NewFallbackVoucherState(client)
@@ -26,22 +22,22 @@ func TestFallbackVoucherStateCreation(t *testing.T) {
 		t.Fatal("Failed to create fallback voucher state")
 	}
 
+	// Test that we can create a TO2 server wrapper
+	to2Wrapper := NewTO2ServerWrapper(fallbackState)
+	if to2Wrapper == nil {
+		t.Fatal("Failed to create TO2 server wrapper")
+	}
+
 	// Test that we can create an integrated server
-	integratedServer := NewFallbackPassportIntegratedServer(client)
+	integratedServer := NewPassportIntegratedServer(client)
 	if integratedServer == nil {
-		t.Fatal("Failed to create fallback integrated server")
+		t.Fatal("Failed to create integrated server")
 	}
 
-	// Test that we can get the voucher state
-	voucherState := integratedServer.GetVoucherState()
-	if voucherState == nil {
-		t.Fatal("Failed to get voucher state from integrated server")
-	}
-
-	fmt.Printf("✅ Successfully created fallback mechanism components:\n")
-	fmt.Printf("   - FallbackVoucherState: %T\n", fallbackState)
-	fmt.Printf("   - PassportIntegratedServer: %T\n", integratedServer)
-	fmt.Printf("   - VoucherStateInterface: %T\n", voucherState)
+	t.Logf("✅ Successfully created fallback mechanism components:")
+	t.Logf("   - FallbackVoucherState: %T", fallbackState)
+	t.Logf("   - TO2ServerWrapper: %T", to2Wrapper)
+	t.Logf("   - PassportIntegratedServer: %T", integratedServer)
 }
 
 // TestFallbackVoucherStateInterface tests that the fallback state implements the interface
@@ -52,20 +48,42 @@ func TestFallbackVoucherStateInterface(t *testing.T) {
 		Timeout: 30,
 	}
 
-	client := &PassportClient{
-		config: config,
-		client: nil,
-	}
-
+	client := NewPassportClient(config)
 	fallbackState := NewFallbackVoucherState(client)
 
 	// Test that it implements the interface
 	var _ VoucherStateInterface = fallbackState
 
-	// Test that we can call interface methods (they may fail due to nil client, but shouldn't panic)
-	// We'll just test that the interface is implemented correctly
-	// The actual functionality will be tested with a proper client
-	t.Log("Testing interface implementation - actual calls will fail with nil client")
+	t.Log("✅ Fallback voucher state correctly implements VoucherStateInterface")
+}
 
-	fmt.Println("✅ Fallback voucher state correctly implements VoucherStateInterface")
+// TestTO2StateManagement tests the TO2 state management functionality
+func TestTO2StateManagement(t *testing.T) {
+	config := &PassportConfig{
+		BaseURL: "https://test.example.com",
+		APIKey:  "test-key",
+		Timeout: 30,
+	}
+
+	client := NewPassportClient(config)
+	fallbackState := NewFallbackVoucherState(client)
+
+	// Initially, fallback should be disabled
+	if fallbackState.IsTO2Active() {
+		t.Error("Fallback should be disabled initially")
+	}
+
+	// Enable TO2 mode
+	fallbackState.SetTO2Active(true)
+	if !fallbackState.IsTO2Active() {
+		t.Error("Failed to enable fallback for TO2")
+	}
+
+	// Disable TO2 mode
+	fallbackState.SetTO2Active(false)
+	if fallbackState.IsTO2Active() {
+		t.Error("Failed to disable fallback after TO2")
+	}
+
+	t.Log("✅ TO2 state management working correctly")
 }

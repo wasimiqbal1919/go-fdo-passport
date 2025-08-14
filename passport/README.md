@@ -212,3 +212,81 @@ If challenges arise with this approach, the fallback option is available:
 > "if we find a lot of challenges, we can keep the voucher as is, and at the end of protocol make a call to make commissioning passport."
 
 The OnVoucherCreated and OnVoucherExtended callbacks support this fallback approach by allowing Passport commissioning calls at voucher lifecycle events.
+
+## TO2-Specific Fallback Mechanism
+
+The Passport integration now includes a **TO2-specific fallback mechanism** that fulfills the requirement: **"Only fall back to calling Passport during TO2 if conversion layer doesn't work."**
+
+### How It Works
+
+1. **Protocol-Aware Fallback**: The system tracks whether TO2 protocol is currently active
+2. **Conditional Passport Calls**: Fallback to Passport API only happens during TO2 operations
+3. **Automatic State Management**: TO2 state is automatically managed by the server wrapper
+4. **Security Enforcement**: Passport API calls are blocked outside of TO2 protocol
+
+### Key Components
+
+#### `FallbackVoucherState`
+- **TO2 State Tracking**: Uses `isTO2Active` flag with thread-safe mutex
+- **Conditional Fallback**: Only allows Passport API calls when `IsTO2Active()` returns true
+- **Protocol Isolation**: TO1, DI, and other protocols cannot trigger Passport fallback
+
+#### `TO2ServerWrapper`
+- **Automatic State Management**: Wraps the FDO TO2Server to manage TO2 state
+- **Message Type Detection**: Identifies TO2 messages and enables fallback automatically
+- **State Cleanup**: Ensures TO2 state is properly reset after each operation
+
+### Usage Example
+
+```go
+// Create fallback voucher state
+fallbackState := passport.NewFallbackVoucherState(client)
+
+// Create TO2 server wrapper that manages TO2 state
+to2Server := passport.NewTO2ServerWrapper(fallbackState)
+
+// The server automatically:
+// 1. Enables fallback when TO2 messages arrive
+// 2. Disables fallback when TO2 messages complete
+// 3. Only allows Passport API calls during TO2 operations
+```
+
+### Fallback Behavior
+
+| Protocol | Fallback Allowed | Behavior |
+|----------|------------------|----------|
+| **TO1** | ❌ No | Returns conversion layer error without Passport fallback |
+| **DI** | ❌ No | Returns conversion layer error without Passport fallback |
+| **TO2** | ✅ Yes | Falls back to Passport API if conversion layer fails |
+| **Other** | ❌ No | Returns conversion layer error without Passport fallback |
+
+### Security Benefits
+
+1. **Protocol Isolation**: Prevents unauthorized Passport API calls during non-TO2 operations
+2. **Resource Protection**: Avoids unnecessary network calls and API usage
+3. **Audit Trail**: Clear logging of when fallback is enabled/disabled
+4. **Thread Safety**: Proper mutex protection for concurrent operations
+
+### Implementation Details
+
+The fallback mechanism integrates with TO2 at these key points:
+
+1. **`TO2Server.Respond`**: Main entry point that detects TO2 messages
+2. **Message Type Detection**: Uses predefined TO2 message type constants
+3. **State Management**: Automatically enables/disables fallback based on protocol
+4. **Error Handling**: Provides clear error messages for blocked fallback attempts
+
+### Testing
+
+Run the TO2-specific fallback example:
+
+```bash
+cd passport/example
+go run to2_fallback_example.go
+```
+
+This demonstrates:
+- Fallback state management
+- Protocol-aware behavior
+- Security enforcement
+- Complete integration flow
